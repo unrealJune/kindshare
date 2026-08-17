@@ -1,0 +1,15 @@
+# Built binaries only - anchored, so these do not also match the source
+# directories src/kindshare/ and src/kindrop/, which they did at first and
+# silently excluded every Go file from the repository.
+/src/kindshare/kindshare
+/src/kindrop/kindrop
+/build/hostapd
+/build/hostapd_cli
+*.exe
+
+# Generated protobuf bindings ARE committed, so a clone builds with plain
+# `go build`. Regenerate with the protoc command in docs/PORTING.md.
+
+# Device logs pulled for debugging
+logs/
+*.log

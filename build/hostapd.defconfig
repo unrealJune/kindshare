@@ -1,0 +1,23 @@
+# hostapd build config for Kindle Voyage (AR6003 / ath6kl_sdio, nl80211)
+# Fully static musl build - no runtime deps on the Kindle's glibc.
+
+# The only driver we need. ath6kl is fullmac and speaks nl80211.
+CONFIG_DRIVER_NL80211=y
+CONFIG_LIBNL32=y
+
+# AR6003 is single-stream 802.11n on 2.4GHz.
+CONFIG_IEEE80211N=y
+
+# Control interface so hostapd_cli / scripts can drive it.
+CONFIG_CTRL_IFACE=y
+
+# Internal crypto: avoids linking OpenSSL entirely. Enough for WPA2-PSK,
+# which is all we need - no EAP/RADIUS on this device.
+CONFIG_TLS=internal
+CONFIG_INTERNAL_LIBTOMMATH=y
+
+# Strip everything enterprise-shaped to keep the binary small.
+CONFIG_NO_RADIUS=y
+CONFIG_NO_ACCOUNTING=y
+CONFIG_NO_VLAN=y
+CONFIG_NO_DUMP_STATE=y

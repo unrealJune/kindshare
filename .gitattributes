@@ -1,0 +1,11 @@
+# These files are copied onto an e-reader and executed by busybox sh, or read by
+# LuaJIT. CRLF breaks them in confusing ways, so force LF regardless of the
+# checkout platform.
+* text=auto eol=lf
+*.sh    text eol=lf
+*.lua   text eol=lf
+*.conf  text eol=lf
+*.go    text eol=lf
+*.proto text eol=lf
+*.md    text eol=lf
+Dockerfile text eol=lf
