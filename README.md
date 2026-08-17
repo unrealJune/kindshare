@@ -148,7 +148,7 @@ it if you want the AP to persist.
 
 On the phone: share a file, pick **Kindle Voyage**, done.
 
-With **SoftAP**, join the Kindle's network first (default SSID `iceeibe`, WPA2). Quick
+With **SoftAP**, join the Kindle's network first (default SSID `kindrop`, WPA2). Quick
 Share keeps working — the daemon follows the address change automatically, so there is
 nothing extra to switch on.
 
