@@ -8,6 +8,27 @@ share, so the phone can connect directly to the Kindle.
 
 Files land in `/mnt/us/documents`, so an epub sent this way appears in your library.
 
+**It ships as a KOReader plugin.** Everything is driven from
+KOReader → **Network** → **Quick Share / SoftAP**: turn receiving on or off, enable it at
+boot, start the access point, and read diagnostics — all on the device, no shell needed
+once it's installed.
+
+```
+Quick Share / SoftAP
+  Receiving: ON  (tap to stop)
+  Start receiving at boot            [x]
+  Service status
+  Start access point
+  Stop access point, restore Wi-Fi
+  Keep access point up (disarm timer)
+  Diagnostics
+  Save diagnostics to /mnt/us
+```
+
+The plugin is the control surface only — the receiver itself runs as a small background
+daemon, so transfers keep working when KOReader isn't open. See
+[How it works](#how-it-works).
+
 Verified end to end on a **Kindle Voyage, firmware 5.13.6** (kernel 3.0.35-lab126,
 Atheros AR6003 / `ath6kl_sdio`). See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)
 before assuming it works on your device — and note that the **Quick Share half needs no
