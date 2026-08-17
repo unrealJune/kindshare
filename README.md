@@ -148,9 +148,25 @@ it if you want the AP to persist.
 
 On the phone: share a file, pick **Kindle Voyage**, done.
 
-With **SoftAP**, join the Kindle's network first (default SSID `kindrop`, WPA2). Quick
-Share keeps working — the daemon follows the address change automatically, so there is
-nothing extra to switch on.
+With **SoftAP**, join the Kindle's network from the phone first:
+
+| | |
+|---|---|
+| **Network (SSID)** | `kindrop` |
+| **Password** | `kindlevoyage` |
+| Security | WPA2-PSK (CCMP) |
+| The Kindle's address | `192.168.55.1` |
+
+Quick Share keeps working over it — the daemon follows the address change automatically,
+so there is nothing extra to switch on.
+
+**Change the password.** It's a published default, so anyone reading this page knows it.
+Edit `wpa_passphrase` (and `ssid` if you like) in `device/hostapd.conf`, copy it to
+`/mnt/us/kindler/etc/hostapd.conf`, and restart the access point.
+
+The AP runs WPA2 rather than open **by necessity, not for privacy** — on an open network
+this wifi firmware never authorizes the client and no data flows at all. See
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#softap-clients-associate-but-get-no-ip).
 
 > **If the Kindle isn't found, check the phone's wifi icon.** On some Android builds,
 > opening Quick Share makes the phone drop off wifi entirely — a known Quick Share bug.
