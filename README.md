@@ -94,20 +94,63 @@ This is the **only** write to the root filesystem. After it, enabling and disabl
 autostart only creates or deletes `/mnt/us/kindler/autostart` — the upstart job checks
 for that flag and exits if it's missing, so you never remount root again.
 
+## KOReader plugin setup
+
+### Installing
+
+Copy the plugin folder into KOReader's `plugins` directory and restart KOReader —
+plugins are only loaded at startup, so it won't appear until you do:
+
+```sh
+scp -r plugin/kindleap.koplugin root@KINDLE:/mnt/us/koreader/plugins/
+```
+
+If you edited anything on Windows, strip carriage returns or LuaJIT will fail to parse
+the file:
+
+```sh
+sed -i 's/\r$//' /mnt/us/koreader/plugins/kindleap.koplugin/*.lua
+```
+
+Check it parses before restarting — a syntax error makes the plugin vanish silently
+rather than complain:
+
+```sh
+/mnt/us/koreader/luajit -e 'print(loadfile("/mnt/us/koreader/plugins/kindleap.koplugin/main.lua") and "OK" or "ERROR")'
+```
+
+It then appears under **Network** in KOReader's top menu as **Quick Share / SoftAP**.
+
+### The controls
+
+| Entry | What it does |
+|---|---|
+| **Receiving: ON / off** | Starts or stops the receiver **right now**. The label reflects the real process state, not a remembered setting. |
+| **Start receiving at boot** ☐ | Whether the receiver starts automatically after a reboot. Needs the upstart job installed once — see [Start at boot](#start-at-boot-optional). |
+| **Service status** | Mode (`station` / `softap` / `down`), current address, whether the port is genuinely open, files received, last error. |
+| **Start access point** | Turns the Kindle into an AP. Confirms first, because wlan0 leaves station mode and any SSH session drops. |
+| **Stop access point, restore Wi-Fi** | Tears the AP down and restarts normal wifi. |
+| **Keep access point up (disarm timer)** | Cancels the automatic revert (below). |
+| **Diagnostics** | Everything about the current state on screen: interfaces, processes, firewall counters, recent logs. |
+| **Save diagnostics to /mnt/us** | Writes a timestamped bundle plus raw logs to `/mnt/us/kindler/logs/`, which survives a reboot. Use this when the AP is up and nothing can reach the device. |
+
+**The two toggles are independent.** Stopping the service for now doesn't change whether
+it starts at boot, and vice versa — so you can silence it for an afternoon without
+forgetting to re-enable it later.
+
+**The access point reverts itself.** If no client connects within ten minutes it tears
+the AP down and restores wifi automatically, so a failed attempt costs a wait rather than
+a walk to the device. The countdown measures *idle* time and resets while a client is
+connected, so it can't interrupt a transfer in progress. **Keep access point up** disarms
+it if you want the AP to persist.
+
 ## Use it
 
-Open KOReader → menu → **Network** → **Quick Share / SoftAP**:
-
-- **Receiving: ON / off** — start or stop the receiver
-- **Start receiving at boot** — the autostart flag
-- **Service status** — mode, address, whether the port is actually open, files received
-- **Start access point** — for when there's no shared network
-- **Diagnostics** / **Save diagnostics** — everything needed to debug a failure offline
-
-Then on the phone: share a file, pick **Kindle Voyage**, done.
+On the phone: share a file, pick **Kindle Voyage**, done.
 
 With **SoftAP**, join the Kindle's network first (default SSID `iceeibe`, WPA2). Quick
-Share keeps working — the daemon follows the address change automatically.
+Share keeps working — the daemon follows the address change automatically, so there is
+nothing extra to switch on.
 
 ## How it works
 
