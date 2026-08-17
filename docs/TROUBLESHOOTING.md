@@ -30,6 +30,26 @@ within a minute.
 Historically this was caused by the SoftAP teardown deleting a rule it didn't own. It's
 fixed, but if you add scripts of your own, **only delete rules you created**.
 
+## The phone drops off wifi as soon as you open Quick Share
+
+**Symptom:** you open the share sheet and the phone leaves the network — watch the wifi
+icon in the status bar, it disappears or switches to mobile data. The Kindle then can't
+be found, or a transfer that had started stalls. Nothing is wrong on the Kindle: it is
+advertising correctly to a network the phone is no longer on.
+
+**Workaround: turn on the phone's Wi-Fi hotspot, even though nothing will connect to
+it.** That's enough to stop Quick Share tearing down the wifi connection. Leave it on for
+the transfer; you can switch it off afterwards.
+
+This is a known Android/Quick Share bug, not something this software can fix. The
+underlying cause is that Quick Share negotiates a peer-to-peer medium (Wi-Fi Direct or a
+local-only hotspot) and a phone with a single radio can't hold an infrastructure
+connection while bringing up a P2P group on another channel — so it drops the one it has.
+Having a hotspot already up appears to keep it from doing that.
+
+Worth checking first if the Kindle "sometimes" isn't found, because the failure looks
+identical to a discovery problem.
+
 ## The device doesn't appear on the phone at all
 
 Check, in order:

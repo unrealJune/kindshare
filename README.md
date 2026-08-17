@@ -152,6 +152,12 @@ With **SoftAP**, join the Kindle's network first (default SSID `kindrop`, WPA2).
 Share keeps working — the daemon follows the address change automatically, so there is
 nothing extra to switch on.
 
+> **If the Kindle isn't found, check the phone's wifi icon.** On some Android builds,
+> opening Quick Share makes the phone drop off wifi entirely — a known Quick Share bug.
+> The fix is counter-intuitive: **turn on the phone's Wi-Fi hotspot**, even though
+> nothing will connect to it. That stops Quick Share tearing down the wifi connection.
+> See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## How it works
 
 ```
