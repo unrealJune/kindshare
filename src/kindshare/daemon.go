@@ -32,6 +32,7 @@ type daemonState struct {
 	IP          string `json:"ip"`
 	Advertising bool   `json:"advertising"`
 	Alias       string `json:"alias"`
+	DeviceID    string `json:"deviceId"`
 	Port        int    `json:"port"`
 	Received    int64  `json:"received"`
 	LastFile    string `json:"lastFile"`
@@ -103,16 +104,21 @@ func writeStatus(s daemonState) {
 
 // runDaemon owns the listener for the process lifetime and keeps the mDNS
 // registration matched to the current address.
-func runDaemon(alias, ifname string, port int, dtype byte, dest string, native bool, announceEvery time.Duration) {
-	// One endpoint identity for the life of the process. Regenerating it on
-	// every re-registration would make the device look like a different peer
-	// each time the address changed.
-	epID := endpointID()
+func runDaemon(id *identity, ifname string, port int, dtype byte, dest string, native bool, announceEvery time.Duration) {
+	// One endpoint identity for the life of the process - and, now that it is
+	// loaded from a file, for the life of the device. Regenerating it made the
+	// device look like a different peer on every restart, which left the phone
+	// holding stale entries that answer to nothing.
+	alias := id.Display()
+	epID := []byte(id.ID)
 	instance := serviceInstanceName(epID)
-	info := endpointInfo(alias, dtype, -1, false)
+	info := endpointInfo(alias, dtype, -1, false, id.DevID)
 
 	log.Printf("kindshare daemon: alias=%q iface=%s port=%d dest=%s", alias, ifname, port, dest)
 	log.Printf("  endpoint id %s, instance %s", string(epID), instance)
+	if id.ephemeral {
+		log.Printf("  WARNING: identity is ephemeral - it will change on restart")
+	}
 
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -138,11 +144,12 @@ func runDaemon(alias, ifname string, port int, dtype byte, dest string, native b
 			instance: instance,
 			service:  serviceType,
 			domain:   domain,
-			host:     hostLabel(alias, string(epID)),
-			port:     port,
-			txt:      []string{"n=" + info},
-			iface:    ifi,
-			every:    announceEvery,
+			// The base name, not the alias: hostLabel appends the id itself.
+			host:  hostLabel(id.Name, string(epID)),
+			port:  port,
+			txt:   []string{"n=" + info},
+			iface: ifi,
+			every: announceEvery,
 		}
 		if err := adv.start(); err != nil {
 			log.Fatalf("mdns: %v", err)
@@ -267,6 +274,7 @@ func runDaemon(alias, ifname string, port int, dtype byte, dest string, native b
 			IP:          curIP,
 			Advertising: advertising(),
 			Alias:       alias,
+			DeviceID:    id.ID,
 			Port:        port,
 			Received:    filesReceived.Load(),
 			LastFile:    lastFileName.Load().(string),

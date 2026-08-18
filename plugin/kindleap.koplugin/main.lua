@@ -20,16 +20,19 @@ session was used to start it.
 local ConfirmBox = require("ui/widget/confirmbox")
 local Font = require("ui/font")
 local InfoMessage = require("ui/widget/infomessage")
+local InputDialog = require("ui/widget/inputdialog")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local _ = require("gettext")
+local T = require("ffi/util").template
 local logger = require("logger")
 
 local BASE = "/mnt/us/kindler"
 local AP = BASE .. "/kindle-ap.sh"
 local SVC = BASE .. "/kindshare-svc.sh"
 local AUTOSTART = BASE .. "/autostart"
+local IDENTITY = BASE .. "/identity"
 local LOGDIR = BASE .. "/logs"
 
 local AP_LOG = "/tmp/kindle-ap.log"
@@ -66,6 +69,71 @@ end
 
 local function serviceRunning()
     return sh("pidof kindshare"):match("%d") ~= nil
+end
+
+-- ------------------------------------------------------------------ identity
+--
+-- The daemon owns this file and creates it on first start; we only ever edit
+-- the name and clear the id. devid in particular must survive untouched, so
+-- every write passes unknown lines through rather than regenerating the file.
+
+local function readIdentity()
+    local id = { name = nil, id = nil }
+    local f = io.open(IDENTITY, "r")
+    if not f then return id end
+    for line in f:lines() do
+        local k, v = line:match("^%s*([%w_]+)%s*=%s*(.-)%s*$")
+        if k == "name" then id.name = v
+        elseif k == "id" then id.id = v end
+    end
+    f:close()
+    return id
+end
+
+-- displayName is what the phone shows: the name with the id appended. Kept
+-- identical to identity.Display() in the Go side.
+local function displayName()
+    local id = readIdentity()
+    if not id.name then return nil end
+    if id.id and id.id ~= "" then return id.name .. " " .. id.id end
+    return id.name
+end
+
+-- writeIdentityField rewrites one key in place, preserving every other line.
+-- Written to a temp file and renamed so the daemon never reads a half-written
+-- one. A nil value deletes the key, which is how the id gets regenerated: the
+-- daemon fills in anything missing on next start.
+local function writeIdentityField(key, value)
+    local lines, seen = {}, false
+    local f = io.open(IDENTITY, "r")
+    if f then
+        for line in f:lines() do
+            local k = line:match("^%s*([%w_]+)%s*=")
+            if k == key then
+                seen = true
+                if value then table.insert(lines, key .. "=" .. value) end
+            else
+                table.insert(lines, line)
+            end
+        end
+        f:close()
+    end
+    if not seen and value then table.insert(lines, key .. "=" .. value) end
+
+    local tmp = IDENTITY .. ".tmp"
+    local out = io.open(tmp, "w")
+    if not out then return false, "cannot write " .. tmp end
+    out:write(table.concat(lines, "\n") .. "\n")
+    out:close()
+    -- rename over the existing file, not remove-then-rename: on POSIX this is
+    -- atomic, and the daemon may be reading it at any moment.
+    local ok = os.rename(tmp, IDENTITY)
+    if not ok then
+        os.remove(tmp)
+        return false, "cannot replace " .. IDENTITY
+    end
+    sh("sync")
+    return true
 end
 
 function KindleAP:init()
@@ -144,6 +212,95 @@ function KindleAP:saveDiagnostics()
     self:toast(_("Saved:\n") .. path)
 end
 
+-- ------------------------------------------------------------ identity edits
+
+-- applyIdentity writes the change and restarts the daemon if it is running.
+-- The identity is read once at startup, so an edit means nothing until the
+-- process comes back - doing it silently here avoids a setting that appears to
+-- have had no effect.
+function KindleAP:applyIdentity(touchmenu_instance, ok, err)
+    if not ok then
+        self:toast(T(_("Could not save: %1"), err or _("unknown error")))
+        return
+    end
+    if serviceRunning() then
+        sh(SVC .. " restart")
+        self:toast(T(_("Now shows as: %1"), displayName() or "?"))
+    else
+        self:toast(_("Saved. Takes effect when receiving starts."))
+    end
+    if touchmenu_instance then touchmenu_instance:updateItems() end
+end
+
+function KindleAP:editDeviceName(touchmenu_instance)
+    local current = readIdentity()
+    if not current.name then
+        self:toast(_("Start receiving once first - the daemon creates the identity file."))
+        return
+    end
+
+    local dialog
+    dialog = InputDialog:new{
+        title = _("Device name"),
+        input = current.name,
+        description = _([[The name your phone shows in the Quick Share sheet.
+
+The four-character ID is always appended, so two Kindles can still be told apart.]]),
+        buttons = {{
+            {
+                text = _("Cancel"),
+                id = "close",
+                callback = function() UIManager:close(dialog) end,
+            },
+            {
+                text = _("Save"),
+                is_enter_default = true,
+                callback = function()
+                    -- One line, no leading or trailing space: the value goes
+                    -- into a key=value file and into a DNS label.
+                    local name = (dialog:getInputText() or "")
+                        :gsub("[\r\n]", " "):gsub("^%s+", ""):gsub("%s+$", "")
+                    UIManager:close(dialog)
+                    if name == "" then
+                        self:toast(_("Name cannot be empty."))
+                        return
+                    end
+                    local ok, err = writeIdentityField("name", name)
+                    self:applyIdentity(touchmenu_instance, ok, err)
+                end,
+            },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+function KindleAP:regenerateDeviceID(touchmenu_instance)
+    local current = readIdentity()
+    if not current.name then
+        self:toast(_("Start receiving once first - the daemon creates the identity file."))
+        return
+    end
+
+    UIManager:show(ConfirmBox:new{
+        text = T(_([[Give this device a new ID?
+
+It currently shows as "%1".
+
+The ID is what keeps your phone recognising this Kindle between restarts. Changing it makes the phone treat this as a brand-new device, and the old entry may linger in the share sheet for a while.
+
+Only worth doing if two devices ended up with the same ID.]]), displayName() or "?"),
+        ok_text = _("New ID"),
+        ok_callback = function()
+            -- Deleting the key is the whole mechanism: the daemon generates and
+            -- persists anything missing at startup, so there is no second
+            -- generator here to disagree with it.
+            local ok, err = writeIdentityField("id", nil)
+            self:applyIdentity(touchmenu_instance, ok, err)
+        end,
+    })
+end
+
 -- ---------------------------------------------------------------------- menu
 
 function KindleAP:addToMainMenu(menu_items)
@@ -183,8 +340,28 @@ function KindleAP:addToMainMenu(menu_items)
             {
                 text = _("Service status"),
                 keep_menu_open = true,
-                separator = true,
                 callback = function() self:run(SVC .. " status", _("Quick Share status")) end,
+            },
+            {
+                text_func = function()
+                    local shown = displayName()
+                    if not shown then
+                        return _("Device name: (set on first start)")
+                    end
+                    return T(_("Device name: %1"), shown)
+                end,
+                keep_menu_open = true,
+                callback = function(touchmenu_instance)
+                    self:editDeviceName(touchmenu_instance)
+                end,
+            },
+            {
+                text = _("Change device ID"),
+                keep_menu_open = true,
+                separator = true,
+                callback = function(touchmenu_instance)
+                    self:regenerateDeviceID(touchmenu_instance)
+                end,
             },
             {
                 text = _("Start access point"),

@@ -15,7 +15,7 @@ func testAdvertiser() *advertiser {
 		domain:   domain,
 		host:     hostLabel("Kindle Voyage", "aB3z"),
 		port:     12345,
-		txt:      []string{"n=" + endpointInfo("Kindle Voyage", deviceTypeLaptop, -1, false)},
+		txt:      []string{"n=" + endpointInfo("Kindle Voyage aB3z", deviceTypeLaptop, -1, false, nil)},
 	}
 	a.ip = net.IPv4(192, 168, 1, 228)
 	return a

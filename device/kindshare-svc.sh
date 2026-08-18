@@ -18,6 +18,7 @@ set -u
 BASE=/mnt/us/kindler
 BIN=$BASE/bin/kindshare
 ENABLE=$BASE/autostart
+IDENTITY=$BASE/identity
 PIDFILE=/tmp/kindshare.pid
 LOG=/tmp/kindshare.log
 STATUS=/tmp/kindshare-status.json
@@ -45,7 +46,10 @@ svc_start() {
     [ -x "$BIN" ] || { echo "missing or not executable: $BIN"; return 1; }
     open_ports
     mkdir -p "$DEST"
-    nohup "$BIN" -daemon -name "Kindle Voyage" -iface wlan0 \
+    # No -name here on purpose. The display name and id live in $IDENTITY and
+    # are editable from the KOReader plugin; passing -name would override the
+    # user's choice on every boot and make the setting look broken.
+    nohup "$BIN" -daemon -iface wlan0 \
         -port $PORT -dest "$DEST" > "$LOG" 2>&1 &
     echo $! > "$PIDFILE"
     sleep 2
@@ -81,6 +85,11 @@ svc_status() {
         echo "service: stopped"
     fi
     [ -f "$ENABLE" ] && echo "at boot : enabled" || echo "at boot : disabled"
+    if [ -f "$IDENTITY" ]; then
+        echo "shows as: $(sed -n 's/^name=//p' "$IDENTITY") $(sed -n 's/^id=//p' "$IDENTITY")"
+    else
+        echo "shows as: (no identity file yet - created on first start)"
+    fi
     echo "wlan0   : $(ifconfig wlan0 2>/dev/null | sed -n 's/.*inet addr:\([0-9.]*\).*/\1/p')"
     echo "port    : $PORT $(iptables -L INPUT -n 2>/dev/null | grep -q "dpt:$PORT" && echo '(open)' || echo '(BLOCKED - no firewall rule)')"
     if [ -f "$STATUS" ]; then

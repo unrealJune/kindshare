@@ -37,11 +37,23 @@ const (
 	serviceType = "_FC9F5ED42C8A._tcp"
 	domain      = "local."
 
+	// defaultDeviceName seeds a fresh identity file. It is only ever a default:
+	// the visible name is the identity file's, plus the id suffix.
+	defaultDeviceName = "Kindle Voyage"
+
 	deviceTypeUnknown = 0
 	deviceTypePhone   = 1
 	deviceTypeTablet  = 2
 	deviceTypeLaptop  = 3
 )
+
+// explicitFlags lists the flags actually present on the command line, so a
+// default value can be told apart from the same value passed deliberately.
+func explicitFlags() []string {
+	var set []string
+	flag.Visit(func(f *flag.Flag) { set = append(set, f.Name) })
+	return set
+}
 
 // endpointID is 4 random alphanumeric characters identifying this endpoint.
 func endpointID() []byte {
@@ -73,14 +85,19 @@ func serviceInstanceName(epID []byte) string {
 // endpointInfo builds the TXT "n" value:
 //
 //	byte0: deviceType<<1  (version 0, visible, reserved bit clear)
-//	[1:17]: 16 random bytes - salt + encrypted metadata key
+//	[1:17]: 16 bytes - salt + encrypted metadata key
 //	then a 1-byte length prefix and the UTF-8 device name.
+//
+// devID comes from the identity file rather than being freshly random, so the
+// blob the phone caches for us stays the same across restarts. A nil or
+// wrong-length devID falls back to random, which is only correct for one-shot
+// probes that have no identity to keep.
 //
 // byte0Override and omitName exist to test against a real advertiser observed on
 // the wire, whose byte 0 is 0x16 - i.e. bit 4 SET. NearDrop's notes say bit 4 is
 // visibility with 0 meaning visible, but a working Quick Share device sets it,
 // so the documented polarity is suspect.
-func endpointInfo(name string, deviceType byte, byte0Override int, omitName bool) string {
+func endpointInfo(name string, deviceType byte, byte0Override int, omitName bool, devID []byte) string {
 	b := make([]byte, 0, 1+16+1+len(name))
 	if byte0Override >= 0 {
 		b = append(b, byte(byte0Override))
@@ -88,9 +105,11 @@ func endpointInfo(name string, deviceType byte, byte0Override int, omitName bool
 		b = append(b, (deviceType&0x07)<<1)
 	}
 
-	devID := make([]byte, 16)
-	if _, err := rand.Read(devID); err != nil {
-		panic(err)
+	if len(devID) != 16 {
+		devID = make([]byte, 16)
+		if _, err := rand.Read(devID); err != nil {
+			panic(err)
+		}
 	}
 	b = append(b, devID...)
 
@@ -110,7 +129,9 @@ var destDir *string
 
 func main() {
 	var (
-		name      = flag.String("name", "Kindle Voyage", "device name shown on the phone")
+		name      = flag.String("name", defaultDeviceName, "override the identity file's device name for this run")
+		idFlag    = flag.String("id", "", "override the identity file's 4-char id for this run")
+		idPath    = flag.String("identity", defaultIdentityPath, "where the persistent device identity is stored")
 		port      = flag.Int("port", 12345, "TCP port to advertise and listen on")
 		iface     = flag.String("iface", "wlan0", "interface to advertise on (empty = all)")
 		dtype     = flag.Int("devicetype", deviceTypeLaptop, "0 unknown 1 phone 2 tablet 3 laptop")
@@ -130,6 +151,23 @@ func main() {
 	)
 	flag.Parse()
 	destDir = dest
+
+	// The identity file is authoritative; -name and -id only override it for
+	// this run and are deliberately NOT written back. The boot job used to pass
+	// -name unconditionally, so persisting the flag would let every reboot
+	// silently overwrite whatever the user set in the plugin.
+	id := loadIdentity(*idPath)
+	for _, f := range explicitFlags() {
+		switch f {
+		case "name":
+			id.Name = *name
+		case "id":
+			if !isValidID(*idFlag) {
+				log.Fatalf("-id must be exactly 4 alphanumerics, got %q", *idFlag)
+			}
+			id.ID = *idFlag
+		}
+	}
 
 	// Role inversion probe. Normally the receiver advertises and the phone
 	// discovers - that is the direction that failed. In Google's QR-code flow
@@ -153,15 +191,16 @@ func main() {
 	// Daemon mode owns its own lifecycle: it re-registers when the address
 	// changes, which the one-shot path below cannot do.
 	if *daemon {
-		runDaemon(*name, *iface, *port, byte(*dtype), *dest, *native, *announce)
+		runDaemon(id, *iface, *port, byte(*dtype), *dest, *native, *announce)
 		return
 	}
 
-	epID := endpointID()
+	epID := []byte(id.ID)
 	instance := serviceInstanceName(epID)
-	info := endpointInfo(*name, byte(*dtype), *byte0, *noName)
+	info := endpointInfo(id.Display(), byte(*dtype), *byte0, *noName, id.DevID)
 
 	log.Printf("kindshare stage-1 discovery probe")
+	log.Printf("  device name : %s", id.Display())
 	log.Printf("  endpoint id : %s", string(epID))
 	log.Printf("  instance    : %s", instance)
 	log.Printf("  txt n=      : %s", info)
@@ -203,11 +242,13 @@ func main() {
 			instance: instance,
 			service:  serviceType,
 			domain:   domain,
-			host:     hostLabel(*name, string(epID)),
-			port:     *port,
-			txt:      []string{"n=" + info},
-			iface:    ifi,
-			every:    *announce,
+			// The base name, not Display(): hostLabel appends the id itself,
+			// and passing the suffixed name would repeat it.
+			host:  hostLabel(id.Name, string(epID)),
+			port:  *port,
+			txt:   []string{"n=" + info},
+			iface: ifi,
+			every: *announce,
 		}
 		if err := adv.start(); err != nil {
 			log.Fatalf("mDNS: %v", err)
@@ -222,7 +263,7 @@ func main() {
 		}
 		defer server.Shutdown()
 	}
-	log.Printf("advertising - open Quick Share on the phone and look for %q", *name)
+	log.Printf("advertising - open Quick Share on the phone and look for %q", id.Display())
 
 	go acceptLoop(ln)
 
