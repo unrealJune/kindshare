@@ -239,8 +239,19 @@ func (s *session) sendPayloadAck(h *connections.PayloadTransferFrame_PayloadHead
 					Type:      h.GetType().Enum(),
 					TotalSize: proto.Int64(h.GetTotalSize()),
 				},
-				// PacketType PAYLOAD_ACK carries only the header; ControlMessage
-				// belongs with PacketType CONTROL.
+				// A PAYLOAD_ACK needs only the header - ControlMessage belongs
+				// with PacketType CONTROL - but NearDrop checks every frame it
+				// receives for a chunk with an offset and flags before it looks
+				// at the packet type, and throws a protocol error when one is
+				// missing. It usually hangs up before reading our ack, so this
+				// only bites sometimes, and when it does the file has already
+				// landed and the Mac still reports a failure. Sending a chunk
+				// that describes what we have costs nothing; senders that read
+				// the packet type ignore it.
+				PayloadChunk: &connections.PayloadTransferFrame_PayloadChunk{
+					Offset: proto.Int64(h.GetTotalSize()),
+					Flags:  proto.Int32(0),
+				},
 			},
 		},
 	})
