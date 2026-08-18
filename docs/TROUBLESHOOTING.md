@@ -151,3 +151,30 @@ When the AP is up you have no network path to the device, so collect on-device:
 is up: hostapd connection counts, EAPOL progress, DHCP events, and `/proc/net/dev`
 counters. That timeline is usually what identifies the failure, because it covers the
 window in which nothing can be observed live.
+
+## A Mac sees the Kindle once, then can't reach it
+
+Symptom: the Kindle shows up in NearDrop's device list occasionally, never reliably, and
+picking it does nothing. Android on the same network is fine.
+
+This was a real bug, fixed in the responder. If you are running an older build, or you
+have ported this to another mDNS library, check it directly. Ask for the address of the
+name our SRV record points at:
+
+```sh
+# from another machine on the same network
+kindshare -sniff -iface wlan0 -qname kindle-voyage-xxxx.local. -qtype A
+```
+
+Get the exact name from the daemon log line `mdns: <instance> -> <host>:<port>`. A working
+responder answers within milliseconds:
+
+```
+A kindle-voyage-xxxx.local.  120  CLASS32769  A  192.168.1.228
+```
+
+Silence there, while a browse for `_FC9F5ED42C8A._tcp.local.` is answered normally, is
+exactly the failure: the service is discoverable and unresolvable. Note that the sniffer
+now pins its outgoing interface — an earlier version let the routing table choose, which
+on a machine with a VPN or a hypervisor bridge sent the query out of an adapter the Kindle
+was not on, and looked identical to "nobody answered".

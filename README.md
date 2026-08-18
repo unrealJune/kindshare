@@ -6,6 +6,9 @@ Receive files on a jailbroken Kindle straight from an Android phone's **Quick Sh
 It also turns the Kindle into a **Wi-Fi access point** for when there's no network to
 share, so the phone can connect directly to the Kindle.
 
+Not only Android: any Quick Share sender works. Sending from macOS with
+[NearDrop](https://github.com/grishka/NearDrop) is verified too.
+
 Files land in `/mnt/us/documents`, so an epub sent this way appears in your library.
 
 **It ships as a KOReader plugin.** Everything is driven from
@@ -177,8 +180,8 @@ this wifi firmware never authorizes the client and no data flows at all. See
 ## How it works
 
 ```
-Android phone                         Kindle
-─────────────                         ──────
+Phone or desktop                      Kindle
+────────────────                      ──────
  mDNS query  ──────────────────────▶  kindshare advertises
                                        _FC9F5ED42C8A._tcp
  TCP :12345  ──────────────────────▶  UKEY2 handshake (P-256 ECDH)
@@ -194,11 +197,21 @@ Three components with strict ownership:
 2. **`kindle-ap.sh`** does SoftAP only, and never touches the receiver.
 3. **The KOReader plugin** is a control surface, not a service host.
 
-The daemon polls the interface and **re-registers whenever the address changes**. This
+The daemon polls the interface and **re-advertises whenever the address changes**. This
 matters more than it sounds: mDNS publishes an A record for the address held at
 registration time, and nothing crashes when your DHCP lease changes — so a plain
 restart-on-crash supervisor would report everything healthy while the phone quietly fails
 to connect. The same mechanism gets SoftAP, wifi toggles, and resume-from-sleep for free.
+
+**The mDNS responder is ours** (`src/kindshare/mdns.go`) rather than a library, because
+the obvious library choice answers queries for only three names and the host name your
+own SRV record points at is not one of them. Android and Windows take the address out of
+the additional records and never notice; a stricter resolver asks the address question
+properly, gets silence, and ends up listing a device it cannot dial. That was the whole
+of "works on my phone, not on my friend's Mac". Ours answers address queries,
+re-announces every 45s so a dropped multicast reply is not fatal, sends with the IP TTL
+255 that RFC 6762 asks for, and rebuilds its socket on address change and resume, since
+multicast group membership dies quietly with the interface.
 
 ## Limitations
 

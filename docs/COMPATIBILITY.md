@@ -35,6 +35,23 @@ no-router case.
 Both halves work on this device: Quick Share receiving over ordinary wifi *and* over the
 Kindle's own SoftAP.
 
+## Senders
+
+| Sender | Status |
+|---|---|
+| Android Quick Share | verified |
+| macOS, [NearDrop](https://github.com/grishka/NearDrop) | verified |
+| Windows Quick Share app | expected to work; same discovery and protocol |
+| ChromeOS Nearby Share | untested |
+
+The senders differ in how hard they lean on mDNS being correct, and that is the only
+place they have differed in practice. Android and Windows resolve a service by taking the
+address out of whatever additional records arrive with the browse answer. Apple's resolver
+follows the chain properly — SRV, then an `A` query for the target host — so a responder
+that never answers address queries produces a device that appears in the share sheet and
+then cannot be connected to. Our responder answers them; see `src/kindshare/mdns.go` for
+what else it does that a general-purpose library did not.
+
 ## Checking your device
 
 **Does the receiver stand a chance?** Almost certainly yes if it runs Linux and has a
