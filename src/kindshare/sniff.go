@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"golang.org/x/net/ipv4"
 )
 
 // sniff joins the mDNS multicast group directly and logs every packet seen,
@@ -63,18 +64,32 @@ func sniff(ifname, service string, query bool) {
 					log.Printf("sniff: pack: %v", err)
 					return
 				}
-				// Send from a normal socket so replies can come back unicast too.
-				out, err := net.DialUDP("udp4", nil, group)
+				// Pin the outgoing interface. A plain DialUDP hands the
+				// choice to the routing table, which on a machine with a VPN
+				// or a hypervisor bridge sends the query out of an adapter the
+				// answering device is not on - and the failure looks exactly
+				// like "nobody answered".
+				out, err := net.ListenPacket("udp4", ":0")
 				if err != nil {
-					log.Printf("sniff: dial: %v", err)
+					log.Printf("sniff: socket: %v", err)
 					return
 				}
-				if _, err := out.Write(b); err != nil {
+				p := ipv4.NewPacketConn(out.(*net.UDPConn))
+				var cm *ipv4.ControlMessage
+				if ifi != nil {
+					if err := p.SetMulticastInterface(ifi); err != nil {
+						log.Printf("sniff: multicast interface %s: %v", ifi.Name, err)
+					}
+					cm = &ipv4.ControlMessage{IfIndex: ifi.Index}
+				}
+				p.SetMulticastTTL(255)
+				if _, err := p.WriteTo(b, cm, group); err != nil {
 					log.Printf("sniff: send query: %v", err)
 				} else {
-					log.Printf("sniff: sent %s query for %s (%d bytes)", dns.TypeToString[qt], name, len(b))
+					log.Printf("sniff: sent %s query for %s (%d bytes) via %s",
+						dns.TypeToString[qt], name, len(b), ifaceName(ifi))
 				}
-				out.Close()
+				p.Close()
 				time.Sleep(3 * time.Second)
 			}
 		}()
@@ -102,5 +117,18 @@ func sniff(ifname, service string, query bool) {
 		for _, a := range msg.Answer {
 			log.Printf("    A %s", a.String())
 		}
+		// Additionals matter as much as answers here: a resolver takes the
+		// address from this section, so a response that omits it is a device
+		// that lists but cannot be dialled.
+		for _, e := range msg.Extra {
+			log.Printf("    + %s", e.String())
+		}
 	}
+}
+
+func ifaceName(ifi *net.Interface) string {
+	if ifi == nil {
+		return "the default route"
+	}
+	return ifi.Name
 }
