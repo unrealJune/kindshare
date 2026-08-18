@@ -103,7 +103,7 @@ func writeStatus(s daemonState) {
 
 // runDaemon owns the listener for the process lifetime and keeps the mDNS
 // registration matched to the current address.
-func runDaemon(alias, ifname string, port int, dtype byte, dest string) {
+func runDaemon(alias, ifname string, port int, dtype byte, dest string, native bool, announceEvery time.Duration) {
 	// One endpoint identity for the life of the process. Regenerating it on
 	// every re-registration would make the device look like a different peer
 	// each time the address changed.
@@ -123,6 +123,33 @@ func runDaemon(alias, ifname string, port int, dtype byte, dest string) {
 
 	lastFileName.Store("")
 
+	var ifi *net.Interface
+	if ni, err := net.InterfaceByName(ifname); err == nil {
+		ifi = ni
+	}
+
+	// The native responder is the one that works with macOS; see mdns.go for
+	// what the library it replaces does not do. zeroconf stays reachable behind
+	// a flag so a regression can be confirmed on the device rather than argued
+	// about.
+	var adv *advertiser
+	if native {
+		adv = &advertiser{
+			instance: instance,
+			service:  serviceType,
+			domain:   domain,
+			host:     hostLabel(alias, string(epID)),
+			port:     port,
+			txt:      []string{"n=" + info},
+			iface:    ifi,
+			every:    announceEvery,
+		}
+		if err := adv.start(); err != nil {
+			log.Fatalf("mdns: %v", err)
+		}
+		defer adv.close()
+	}
+
 	var (
 		server  *zeroconf.Server
 		curIP   string
@@ -130,13 +157,38 @@ func runDaemon(alias, ifname string, port int, dtype byte, dest string) {
 		since   = time.Now()
 	)
 
-	republish := func(ip string) {
+	advertising := func() bool {
+		if adv != nil {
+			return adv.addr() != nil
+		}
+		return server != nil
+	}
+
+	republish := func(ip string, force bool) {
 		// Re-assert our firewall rules every time. This device runs
 		// `INPUT policy DROP`, and the rules have been removed out from under us
 		// more than once (the SoftAP teardown used to delete them). Losing them
 		// is invisible: we keep advertising happily while every incoming
 		// connection is dropped before it reaches us.
 		ensureFirewall(port)
+
+		if adv != nil {
+			if force {
+				// The address can be unchanged while the interface underneath
+				// it was rebuilt, so setAddr would decide there is nothing to
+				// do. Force the socket and the announcement regardless.
+				adv.refresh()
+			}
+			adv.setAddr(net.ParseIP(ip))
+			if ip == "" {
+				log.Printf("network down - advertisement withdrawn")
+			} else {
+				since = time.Now()
+				lastErr = ""
+				log.Printf("advertising %q on %s:%d as %s", alias, ip, port, adv.hostName())
+			}
+			return
+		}
 
 		if server != nil {
 			server.Shutdown()
@@ -194,7 +246,7 @@ func runDaemon(alias, ifname string, port int, dtype byte, dest string) {
 			log.Printf("resumed after %s asleep - re-registering on %s",
 				gap.Round(time.Second), ip)
 			curIP = ip
-			republish(ip)
+			republish(ip, true)
 
 		case ip != curIP:
 			// The case that matters in normal running: address changed under us.
@@ -202,18 +254,18 @@ func runDaemon(alias, ifname string, port int, dtype byte, dest string) {
 				log.Printf("address changed %s -> %s, re-registering", curIP, ip)
 			}
 			curIP = ip
-			republish(ip)
+			republish(ip, false)
 
-		case ip != "" && server == nil:
+		case ip != "" && !advertising():
 			// We have a network but no live registration - a previous attempt
 			// failed. Keep retrying rather than sitting silently broken.
-			republish(ip)
+			republish(ip, true)
 		}
 
 		writeStatus(daemonState{
 			Mode:        modeFor(curIP),
 			IP:          curIP,
-			Advertising: server != nil,
+			Advertising: advertising(),
 			Alias:       alias,
 			Port:        port,
 			Received:    filesReceived.Load(),

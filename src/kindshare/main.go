@@ -125,6 +125,8 @@ func main() {
 		noName    = flag.Bool("noname", false, "omit the device-name field entirely")
 		dest      = flag.String("dest", "/mnt/us/documents", "where received files are written")
 		daemon    = flag.Bool("daemon", false, "run as a network-aware always-on receiver")
+		native    = flag.Bool("nativemdns", true, "use our own mDNS responder instead of the zeroconf library")
+		announce  = flag.Duration("announce", defaultAnnounceEvery, "how often the native responder re-announces")
 	)
 	flag.Parse()
 	destDir = dest
@@ -151,7 +153,7 @@ func main() {
 	// Daemon mode owns its own lifecycle: it re-registers when the address
 	// changes, which the one-shot path below cannot do.
 	if *daemon {
-		runDaemon(*name, *iface, *port, byte(*dtype), *dest)
+		runDaemon(*name, *iface, *port, byte(*dtype), *dest, *native, *announce)
 		return
 	}
 
@@ -192,12 +194,34 @@ func main() {
 	}
 	defer ln.Close()
 
-	server, err := zeroconf.Register(instance, serviceType, domain, *port,
-		[]string{"n=" + info}, ifaces)
-	if err != nil {
-		log.Fatalf("mDNS register: %v", err)
+	if *native {
+		var ifi *net.Interface
+		if len(ifaces) > 0 {
+			ifi = &ifaces[0]
+		}
+		adv := &advertiser{
+			instance: instance,
+			service:  serviceType,
+			domain:   domain,
+			host:     hostLabel(*name, string(epID)),
+			port:     *port,
+			txt:      []string{"n=" + info},
+			iface:    ifi,
+			every:    *announce,
+		}
+		if err := adv.start(); err != nil {
+			log.Fatalf("mDNS: %v", err)
+		}
+		defer adv.close()
+		adv.setAddr(net.ParseIP(currentIPv4(*iface)))
+	} else {
+		server, err := zeroconf.Register(instance, serviceType, domain, *port,
+			[]string{"n=" + info}, ifaces)
+		if err != nil {
+			log.Fatalf("mDNS register: %v", err)
+		}
+		defer server.Shutdown()
 	}
-	defer server.Shutdown()
 	log.Printf("advertising - open Quick Share on the phone and look for %q", *name)
 
 	go acceptLoop(ln)
