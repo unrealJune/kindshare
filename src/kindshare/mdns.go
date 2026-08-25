@@ -302,6 +302,14 @@ func (a *advertiser) start() error {
 	a.stop = make(chan struct{})
 	a.kick = make(chan struct{}, 1)
 
+	// Before the first bind, not after it: the announce loop has to outlive a
+	// bind that fails, or a caller that survives one would rebind later and
+	// then never announce - answering direct queries while advertising nothing,
+	// which is a worse state than not starting and much harder to see. Until
+	// there is an address, announce and send are both no-ops.
+	a.wg.Add(1)
+	go a.announceLoop()
+
 	// Not fatal on its own: with nothing pinned the join falls back to the
 	// default route, which is what this did before there was a name to look
 	// up. If there is genuinely no interface, the join below says so.
@@ -311,8 +319,6 @@ func (a *advertiser) start() error {
 	if err := a.rebind(); err != nil {
 		return err
 	}
-	a.wg.Add(1)
-	go a.announceLoop()
 
 	log.Printf("mdns: %s -> %s:%d, announcing every %s",
 		a.instanceName(), a.hostName(), a.port, a.every)

@@ -147,7 +147,11 @@ func runDaemon(id *identity, ifname string, port int, dtype byte, dest string, n
 			every:  announceEvery,
 		}
 		if err := adv.start(); err != nil {
-			log.Fatalf("mdns: %v", err)
+			// Not fatal. The boot job starts us on `started volumd`, long
+			// before wifi has associated, so the first join fails on every cold
+			// boot - and exiting here left autostart with nothing running at
+			// all, invisible until somebody restarted it by hand.
+			log.Printf("mdns: %v; will retry once the interface is up", err)
 		}
 		defer adv.close()
 	}
