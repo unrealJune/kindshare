@@ -78,10 +78,11 @@ type advertiser struct {
 	ifname   string // the name we were told to use, re-resolved on every bind
 	every    time.Duration
 
-	mu    sync.Mutex
-	ip    net.IP
-	iface *net.Interface
-	conn  *ipv4.PacketConn
+	mu       sync.Mutex
+	ip       net.IP
+	iface    *net.Interface
+	conn     *ipv4.PacketConn
+	retrying bool
 
 	stop chan struct{}
 	kick chan struct{}
@@ -378,17 +379,37 @@ func (a *advertiser) rebind() error {
 }
 
 // refresh rebuilds the socket and announces again, for when the address has not
-// changed but our position on the network has.
-func (a *advertiser) refresh() {
+// changed but our position on the network has. It reports whether there is a
+// live socket at the end of it.
+func (a *advertiser) refresh() bool {
 	if err := a.resolveIface(); err != nil {
-		log.Printf("mdns: interface %s: %v", a.ifname, err)
-		return
+		a.retryLater(fmt.Errorf("interface %s: %w", a.ifname, err))
+		return false
 	}
 	if err := a.rebind(); err != nil {
-		log.Printf("mdns: rebind: %v", err)
-		return
+		a.retryLater(fmt.Errorf("rebind: %w", err))
+		return false
 	}
+	a.mu.Lock()
+	a.retrying = false
+	a.mu.Unlock()
 	a.kickAnnounce()
+	return true
+}
+
+// retryLater reports a failed bind, but only the first of a run of them. The
+// caller retries for as long as the interface stays unusable, and the log is a
+// file in tmpfs on a device with very little memory to spare - a line every few
+// seconds would turn a network that is merely down into a second problem. The
+// state stays visible either way: status carries lastError for the whole run.
+func (a *advertiser) retryLater(err error) {
+	a.mu.Lock()
+	first := !a.retrying
+	a.retrying = true
+	a.mu.Unlock()
+	if first {
+		log.Printf("mdns: %v; advertisement will be retried", err)
+	}
 }
 
 func (a *advertiser) kickAnnounce() {
@@ -487,13 +508,16 @@ func (a *advertiser) goodbye() {
 
 // setAddr points the advertisement at a new address, or withdraws it when the
 // address is nil. Unlike re-registering, this keeps our identity: the endpoint,
-// instance and host name a querier already cached stay valid.
-func (a *advertiser) setAddr(ip net.IP) {
+// instance and host name a querier already cached stay valid. force rebuilds the
+// socket even when the address is unchanged, for when the interface underneath
+// it was replaced. It reports whether we are advertising at the end of it, which
+// is a different question from whether the address changed.
+func (a *advertiser) setAddr(ip net.IP, force bool) bool {
 	a.mu.Lock()
 	old := a.ip
-	if ip.Equal(old) && (ip == nil) == (old == nil) {
+	if !force && ip.Equal(old) && (ip == nil) == (old == nil) {
 		a.mu.Unlock()
-		return
+		return old != nil
 	}
 	a.ip = ip
 	a.mu.Unlock()
@@ -506,10 +530,23 @@ func (a *advertiser) setAddr(ip net.IP) {
 		a.goodbye()
 		a.mu.Lock()
 		a.ip = nil
+		// A bind that fails after this is a new episode, and worth a line of
+		// its own: the withdrawal above is already in the log between them.
+		a.retrying = false
 		a.mu.Unlock()
-		return
+		return true
 	}
-	a.refresh()
+	if a.refresh() {
+		return true
+	}
+
+	// Whatever we were holding is not usable. Do not claim to be advertising
+	// until a socket has actually joined the group: the caller decides what to
+	// do about it, and cannot decide anything if we report success regardless.
+	a.mu.Lock()
+	a.ip = nil
+	a.mu.Unlock()
+	return false
 }
 
 func (a *advertiser) close() {

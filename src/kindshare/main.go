@@ -250,7 +250,7 @@ func main() {
 			log.Fatalf("mDNS: %v", err)
 		}
 		defer adv.close()
-		adv.setAddr(net.ParseIP(currentIPv4(*iface)))
+		adv.setAddr(net.ParseIP(currentIPv4(*iface)), false)
 	} else {
 		server, err := zeroconf.Register(instance, serviceType, domain, *port,
 			[]string{"n=" + info}, ifaces)

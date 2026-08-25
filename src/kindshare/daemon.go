@@ -175,13 +175,10 @@ func runDaemon(id *identity, ifname string, port int, dtype byte, dest string, n
 		ensureFirewall(port)
 
 		if adv != nil {
-			if force {
-				// The address can be unchanged while the interface underneath
-				// it was rebuilt, so setAddr would decide there is nothing to
-				// do. Force the socket and the announcement regardless.
-				adv.refresh()
+			if !adv.setAddr(net.ParseIP(ip), force) && ip != "" {
+				lastErr = "mDNS socket unavailable; retrying"
+				return
 			}
-			adv.setAddr(net.ParseIP(ip))
 			if ip == "" {
 				log.Printf("network down - advertisement withdrawn")
 			} else {
