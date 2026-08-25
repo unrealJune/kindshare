@@ -129,11 +129,6 @@ func runDaemon(id *identity, ifname string, port int, dtype byte, dest string, n
 
 	lastFileName.Store("")
 
-	var ifi *net.Interface
-	if ni, err := net.InterfaceByName(ifname); err == nil {
-		ifi = ni
-	}
-
 	// The native responder is the one that works with macOS; see mdns.go for
 	// what the library it replaces does not do. zeroconf stays reachable behind
 	// a flag so a regression can be confirmed on the device rather than argued
@@ -145,11 +140,11 @@ func runDaemon(id *identity, ifname string, port int, dtype byte, dest string, n
 			service:  serviceType,
 			domain:   domain,
 			// The base name, not the alias: hostLabel appends the id itself.
-			host:  hostLabel(id.Name, string(epID)),
-			port:  port,
-			txt:   []string{"n=" + info},
-			iface: ifi,
-			every: announceEvery,
+			host:   hostLabel(id.Name, string(epID)),
+			port:   port,
+			txt:    []string{"n=" + info},
+			ifname: ifname,
+			every:  announceEvery,
 		}
 		if err := adv.start(); err != nil {
 			log.Fatalf("mdns: %v", err)

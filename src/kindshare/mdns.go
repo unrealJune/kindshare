@@ -75,12 +75,13 @@ type advertiser struct {
 	host     string // host label, no dots
 	port     int
 	txt      []string
-	iface    *net.Interface
+	ifname   string // the name we were told to use, re-resolved on every bind
 	every    time.Duration
 
-	mu   sync.Mutex
-	ip   net.IP
-	conn *ipv4.PacketConn
+	mu    sync.Mutex
+	ip    net.IP
+	iface *net.Interface
+	conn  *ipv4.PacketConn
 
 	stop chan struct{}
 	kick chan struct{}
@@ -97,6 +98,32 @@ func (a *advertiser) addr() net.IP {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.ip
+}
+
+func (a *advertiser) mcastIface() *net.Interface {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.iface
+}
+
+// resolveIface looks the interface up by name again. A wifi reset destroys and
+// recreates wlan0 with the same name and often the same address but a new
+// index, and multicast membership is keyed by that index - so a socket bound
+// against the handle we were holding can never rejoin the group, however many
+// times it tries. At boot the interface may not exist at all yet, which is the
+// same problem one step earlier.
+func (a *advertiser) resolveIface() error {
+	if a.ifname == "" {
+		return nil
+	}
+	ni, err := net.InterfaceByName(a.ifname)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.iface = ni
+	a.mu.Unlock()
+	return nil
 }
 
 // ---------------------------------------------------------------- records
@@ -253,8 +280,8 @@ func (a *advertiser) send(m *dns.Msg, dst net.Addr) {
 		return
 	}
 	var cm *ipv4.ControlMessage
-	if a.iface != nil {
-		cm = &ipv4.ControlMessage{IfIndex: a.iface.Index}
+	if ifi := a.mcastIface(); ifi != nil {
+		cm = &ipv4.ControlMessage{IfIndex: ifi.Index}
 	}
 	to := dst
 	if to == nil {
@@ -274,6 +301,12 @@ func (a *advertiser) start() error {
 	a.stop = make(chan struct{})
 	a.kick = make(chan struct{}, 1)
 
+	// Not fatal on its own: with nothing pinned the join falls back to the
+	// default route, which is what this did before there was a name to look
+	// up. If there is genuinely no interface, the join below says so.
+	if err := a.resolveIface(); err != nil {
+		log.Printf("mdns: interface %s: %v", a.ifname, err)
+	}
 	if err := a.rebind(); err != nil {
 		return err
 	}
@@ -301,12 +334,13 @@ func (a *advertiser) open() (*ipv4.PacketConn, error) {
 	}
 
 	p := ipv4.NewPacketConn(uc)
-	if a.iface != nil {
-		if err := p.SetMulticastInterface(a.iface); err != nil {
-			log.Printf("mdns: multicast interface %s: %v", a.iface.Name, err)
+	ifi := a.mcastIface()
+	if ifi != nil {
+		if err := p.SetMulticastInterface(ifi); err != nil {
+			log.Printf("mdns: multicast interface %s: %v", ifi.Name, err)
 		}
 	}
-	if err := p.JoinGroup(a.iface, &net.UDPAddr{IP: mdnsGroupV4}); err != nil {
+	if err := p.JoinGroup(ifi, &net.UDPAddr{IP: mdnsGroupV4}); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("join 224.0.0.251: %w", err)
 	}
@@ -346,6 +380,10 @@ func (a *advertiser) rebind() error {
 // refresh rebuilds the socket and announces again, for when the address has not
 // changed but our position on the network has.
 func (a *advertiser) refresh() {
+	if err := a.resolveIface(); err != nil {
+		log.Printf("mdns: interface %s: %v", a.ifname, err)
+		return
+	}
 	if err := a.rebind(); err != nil {
 		log.Printf("mdns: rebind: %v", err)
 		return
