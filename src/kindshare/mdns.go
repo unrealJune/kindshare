@@ -75,12 +75,14 @@ type advertiser struct {
 	host     string // host label, no dots
 	port     int
 	txt      []string
-	iface    *net.Interface
+	ifname   string // the name we were told to use, re-resolved on every bind
 	every    time.Duration
 
-	mu   sync.Mutex
-	ip   net.IP
-	conn *ipv4.PacketConn
+	mu       sync.Mutex
+	ip       net.IP
+	iface    *net.Interface
+	conn     *ipv4.PacketConn
+	retrying bool
 
 	stop chan struct{}
 	kick chan struct{}
@@ -97,6 +99,32 @@ func (a *advertiser) addr() net.IP {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.ip
+}
+
+func (a *advertiser) mcastIface() *net.Interface {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.iface
+}
+
+// resolveIface looks the interface up by name again. A wifi reset destroys and
+// recreates wlan0 with the same name and often the same address but a new
+// index, and multicast membership is keyed by that index - so a socket bound
+// against the handle we were holding can never rejoin the group, however many
+// times it tries. At boot the interface may not exist at all yet, which is the
+// same problem one step earlier.
+func (a *advertiser) resolveIface() error {
+	if a.ifname == "" {
+		return nil
+	}
+	ni, err := net.InterfaceByName(a.ifname)
+	if err != nil {
+		return err
+	}
+	a.mu.Lock()
+	a.iface = ni
+	a.mu.Unlock()
+	return nil
 }
 
 // ---------------------------------------------------------------- records
@@ -253,8 +281,8 @@ func (a *advertiser) send(m *dns.Msg, dst net.Addr) {
 		return
 	}
 	var cm *ipv4.ControlMessage
-	if a.iface != nil {
-		cm = &ipv4.ControlMessage{IfIndex: a.iface.Index}
+	if ifi := a.mcastIface(); ifi != nil {
+		cm = &ipv4.ControlMessage{IfIndex: ifi.Index}
 	}
 	to := dst
 	if to == nil {
@@ -274,11 +302,23 @@ func (a *advertiser) start() error {
 	a.stop = make(chan struct{})
 	a.kick = make(chan struct{}, 1)
 
+	// Before the first bind, not after it: the announce loop has to outlive a
+	// bind that fails, or a caller that survives one would rebind later and
+	// then never announce - answering direct queries while advertising nothing,
+	// which is a worse state than not starting and much harder to see. Until
+	// there is an address, announce and send are both no-ops.
+	a.wg.Add(1)
+	go a.announceLoop()
+
+	// Not fatal on its own: with nothing pinned the join falls back to the
+	// default route, which is what this did before there was a name to look
+	// up. If there is genuinely no interface, the join below says so.
+	if err := a.resolveIface(); err != nil {
+		log.Printf("mdns: interface %s: %v", a.ifname, err)
+	}
 	if err := a.rebind(); err != nil {
 		return err
 	}
-	a.wg.Add(1)
-	go a.announceLoop()
 
 	log.Printf("mdns: %s -> %s:%d, announcing every %s",
 		a.instanceName(), a.hostName(), a.port, a.every)
@@ -301,12 +341,13 @@ func (a *advertiser) open() (*ipv4.PacketConn, error) {
 	}
 
 	p := ipv4.NewPacketConn(uc)
-	if a.iface != nil {
-		if err := p.SetMulticastInterface(a.iface); err != nil {
-			log.Printf("mdns: multicast interface %s: %v", a.iface.Name, err)
+	ifi := a.mcastIface()
+	if ifi != nil {
+		if err := p.SetMulticastInterface(ifi); err != nil {
+			log.Printf("mdns: multicast interface %s: %v", ifi.Name, err)
 		}
 	}
-	if err := p.JoinGroup(a.iface, &net.UDPAddr{IP: mdnsGroupV4}); err != nil {
+	if err := p.JoinGroup(ifi, &net.UDPAddr{IP: mdnsGroupV4}); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("join 224.0.0.251: %w", err)
 	}
@@ -344,13 +385,37 @@ func (a *advertiser) rebind() error {
 }
 
 // refresh rebuilds the socket and announces again, for when the address has not
-// changed but our position on the network has.
-func (a *advertiser) refresh() {
-	if err := a.rebind(); err != nil {
-		log.Printf("mdns: rebind: %v", err)
-		return
+// changed but our position on the network has. It reports whether there is a
+// live socket at the end of it.
+func (a *advertiser) refresh() bool {
+	if err := a.resolveIface(); err != nil {
+		a.retryLater(fmt.Errorf("interface %s: %w", a.ifname, err))
+		return false
 	}
+	if err := a.rebind(); err != nil {
+		a.retryLater(fmt.Errorf("rebind: %w", err))
+		return false
+	}
+	a.mu.Lock()
+	a.retrying = false
+	a.mu.Unlock()
 	a.kickAnnounce()
+	return true
+}
+
+// retryLater reports a failed bind, but only the first of a run of them. The
+// caller retries for as long as the interface stays unusable, and the log is a
+// file in tmpfs on a device with very little memory to spare - a line every few
+// seconds would turn a network that is merely down into a second problem. The
+// state stays visible either way: status carries lastError for the whole run.
+func (a *advertiser) retryLater(err error) {
+	a.mu.Lock()
+	first := !a.retrying
+	a.retrying = true
+	a.mu.Unlock()
+	if first {
+		log.Printf("mdns: %v; advertisement will be retried", err)
+	}
 }
 
 func (a *advertiser) kickAnnounce() {
@@ -449,13 +514,16 @@ func (a *advertiser) goodbye() {
 
 // setAddr points the advertisement at a new address, or withdraws it when the
 // address is nil. Unlike re-registering, this keeps our identity: the endpoint,
-// instance and host name a querier already cached stay valid.
-func (a *advertiser) setAddr(ip net.IP) {
+// instance and host name a querier already cached stay valid. force rebuilds the
+// socket even when the address is unchanged, for when the interface underneath
+// it was replaced. It reports whether we are advertising at the end of it, which
+// is a different question from whether the address changed.
+func (a *advertiser) setAddr(ip net.IP, force bool) bool {
 	a.mu.Lock()
 	old := a.ip
-	if ip.Equal(old) && (ip == nil) == (old == nil) {
+	if !force && ip.Equal(old) && (ip == nil) == (old == nil) {
 		a.mu.Unlock()
-		return
+		return old != nil
 	}
 	a.ip = ip
 	a.mu.Unlock()
@@ -468,10 +536,23 @@ func (a *advertiser) setAddr(ip net.IP) {
 		a.goodbye()
 		a.mu.Lock()
 		a.ip = nil
+		// A bind that fails after this is a new episode, and worth a line of
+		// its own: the withdrawal above is already in the log between them.
+		a.retrying = false
 		a.mu.Unlock()
-		return
+		return true
 	}
-	a.refresh()
+	if a.refresh() {
+		return true
+	}
+
+	// Whatever we were holding is not usable. Do not claim to be advertising
+	// until a socket has actually joined the group: the caller decides what to
+	// do about it, and cannot decide anything if we report success regardless.
+	a.mu.Lock()
+	a.ip = nil
+	a.mu.Unlock()
+	return false
 }
 
 func (a *advertiser) close() {

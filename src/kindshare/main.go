@@ -234,27 +234,23 @@ func main() {
 	defer ln.Close()
 
 	if *native {
-		var ifi *net.Interface
-		if len(ifaces) > 0 {
-			ifi = &ifaces[0]
-		}
 		adv := &advertiser{
 			instance: instance,
 			service:  serviceType,
 			domain:   domain,
 			// The base name, not Display(): hostLabel appends the id itself,
 			// and passing the suffixed name would repeat it.
-			host:  hostLabel(id.Name, string(epID)),
-			port:  *port,
-			txt:   []string{"n=" + info},
-			iface: ifi,
-			every: *announce,
+			host:   hostLabel(id.Name, string(epID)),
+			port:   *port,
+			txt:    []string{"n=" + info},
+			ifname: *iface,
+			every:  *announce,
 		}
 		if err := adv.start(); err != nil {
 			log.Fatalf("mDNS: %v", err)
 		}
 		defer adv.close()
-		adv.setAddr(net.ParseIP(currentIPv4(*iface)))
+		adv.setAddr(net.ParseIP(currentIPv4(*iface)), false)
 	} else {
 		server, err := zeroconf.Register(instance, serviceType, domain, *port,
 			[]string{"n=" + info}, ifaces)
