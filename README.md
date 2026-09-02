@@ -124,6 +124,18 @@ rather than complain:
 
 It then appears under **Network** in KOReader's top menu as **Quick Share / SoftAP**.
 
+## KUAL restart button (Quick Share only)
+
+If you use Quick Share without SoftAP, install the small KUAL extension for an
+on-device recovery button:
+
+```sh
+scp -r plugin/kindshare.kual root@KINDLE:/mnt/us/extensions/
+```
+
+Restart KUAL, then use **Quick Share Restart**. This only restarts
+the receiver daemon; it does not change Wi-Fi mode or start an access point.
+
 ### The controls
 
 | Entry | What it does |

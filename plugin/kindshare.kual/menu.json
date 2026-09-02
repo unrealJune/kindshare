@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "name": "Quick Share Restart",
+      "priority": 10,
+      "action": "/mnt/us/kindler/kindshare-svc.sh",
+      "params": "restart",
+      "exitmenu": false,
+      "refresh": false,
+      "status": false,
+      "internal": "status Restarting Quick Share receiver..."
+    }
+  ]
+}
